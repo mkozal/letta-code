@@ -16,6 +16,7 @@ function printUsage(): void {
 Usage:
   letta agents list [options]
   letta agents create [options]
+  letta agents update --id <id> [options]
 
 List Options:
   --name <name>         Exact name match
@@ -32,6 +33,13 @@ Create Options:
   --description <text>  Agent description
   --tags <tag1,tag2>    Tags (comma-separated)
   --pinned              Pin the created agent globally
+  --env <id>            Remote environment ID
+
+Update Options:
+  --id <id>             Agent ID (required)
+  --name <name>         New agent name
+  --description <text>  New description
+  --env <id>            New remote environment ID
 
   Creates a memfs-enabled agent with persona.md pre-populated.
 
@@ -70,6 +78,8 @@ const AGENTS_OPTIONS = {
   personality: { type: "string" },
   description: { type: "string" },
   pinned: { type: "boolean" },
+  id: { type: "string" },
+  env: { type: "string" },
 } as const;
 
 function parseAgentsArgs(argv: string[]) {
@@ -104,6 +114,10 @@ export async function runAgentsSubcommand(argv: string[]): Promise<number> {
 
   if (action === "list") {
     return runListAction(parsed.values);
+  }
+
+  if (action === "update") {
+    return runUpdateAction(parsed.values);
   }
 
   console.error(`Unknown action: ${action}`);
@@ -151,6 +165,10 @@ async function runCreateAction(
   const tags = parseTags(values.tags);
   if (tags) {
     options.tags = tags;
+  }
+
+  if (typeof values.env === "string") {
+    (options as any).environment_id = values.env;
   }
 
   try {
@@ -220,6 +238,37 @@ async function runListAction(
   try {
     const client = await getClient();
     const result = await client.agents.list(params);
+    console.log(JSON.stringify(result, null, 2));
+    return 0;
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    return 1;
+  }
+}
+
+async function runUpdateAction(
+  values: ReturnType<typeof parseAgentsArgs>["values"],
+): Promise<number> {
+  const agentId = values.id as string | undefined;
+  if (!agentId) {
+    console.error("Error: --id <agent_id> is required for update");
+    return 1;
+  }
+
+  const patch: any = {};
+  if (typeof values.name === "string") {
+    patch.name = values.name;
+  }
+  if (typeof values.description === "string") {
+    patch.description = values.description;
+  }
+  if (typeof values.env === "string") {
+    patch.environment_id = values.env;
+  }
+
+  try {
+    const client = await getClient();
+    const result = await client.agents.update(agentId, patch);
     console.log(JSON.stringify(result, null, 2));
     return 0;
   } catch (error) {

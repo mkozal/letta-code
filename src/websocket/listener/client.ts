@@ -71,7 +71,7 @@ import { getCurrentWorkingDirectory } from "../../runtime-context";
 import { settingsManager } from "../../settings-manager";
 import { telemetry } from "../../telemetry";
 import { trackBoundaryError } from "../../telemetry/errorReporting";
-import { loadTools } from "../../tools/manager";
+import { executeTool, loadTools } from "../../tools/manager";
 import {
   ensureCorrectMemoryTool,
   prepareToolExecutionContextForScope,
@@ -118,6 +118,8 @@ import type {
   SetReflectionSettingsCommand,
   SkillDisableCommand,
   SkillEnableCommand,
+  ToolCallCommand,
+  ToolReturnMessage,
   UpdateModelResponseMessage,
   UpdateToolsetResponseMessage,
 } from "../../types/protocol_v2";
@@ -329,6 +331,19 @@ function safeSocketSend(
   try {
     const serialized =
       typeof payload === "string" ? payload : JSON.stringify(payload);
+
+    // Dump sent message
+    try {
+      require("node:fs").appendFileSync(
+        require("node:path").join(
+          require("node:os").homedir(),
+          ".letta",
+          "ws-dump.log",
+        ),
+        `\n\n[SEND] ${new Date().toISOString()}\n${serialized}\n`,
+      );
+    } catch (e) {}
+
     socket.send(serialized);
     return true;
   } catch (error) {
@@ -354,6 +369,60 @@ function runDetachedListenerTask(
       console.error(`[Listen] ${commandName} failed:`, error);
     }
   });
+}
+
+async function handleToolCall(
+  listener: ListenerRuntime,
+  socket: WebSocket,
+  command: ToolCallCommand,
+): Promise<void> {
+  const { tool_call_id, tool_name, arguments: args } = command;
+
+  if (isDebugEnabled()) {
+    console.log(
+      `[Listen] Executing remote tool call: ${tool_name} (${tool_call_id})`,
+    );
+  }
+
+  try {
+    const result = await executeTool(tool_name, args, {
+      toolCallId: tool_call_id,
+      parentScope: {
+        agentId: command.runtime.agent_id,
+        conversationId: command.runtime.conversation_id,
+      },
+    });
+
+    const response: ToolReturnMessage = {
+      type: "tool_return",
+      tool_call_id,
+      status: result.status,
+      tool_return: result.toolReturn,
+      stdout: result.stdout,
+      stderr: result.stderr,
+    };
+
+    safeSocketSend(
+      socket,
+      response,
+      "listener_tool_return_send_failed",
+      "listener_tool_call",
+    );
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const response: ToolReturnMessage = {
+      type: "tool_return",
+      tool_call_id,
+      status: "error",
+      tool_return: `Tool execution failed: ${errorMessage}`,
+    };
+    safeSocketSend(
+      socket,
+      response,
+      "listener_tool_return_send_failed",
+      "listener_tool_call",
+    );
+  }
 }
 
 async function replaySyncStateForRuntime(
@@ -4397,6 +4466,18 @@ async function connectWithRetry(
           raw,
         });
       }
+      // Dump received message
+      try {
+        require("node:fs").appendFileSync(
+          require("node:path").join(
+            require("node:os").homedir(),
+            ".letta",
+            "ws-dump.log",
+          ),
+          `\n\n[RECV] ${new Date().toISOString()}\n${JSON.stringify(parsed, null, 2)}\n`,
+        );
+      } catch (e) {}
+
       if (isDebugEnabled()) {
         console.log(
           `[Listen] Received message: ${JSON.stringify(parsed, null, 2)}`,
@@ -4427,6 +4508,19 @@ async function connectWithRetry(
           return;
         }
         await replaySyncStateForRuntime(runtime, socket, parsed.runtime);
+        return;
+      }
+
+      if (parsed.type === "tool_call") {
+        if (runtime !== getActiveRuntime() || runtime.intentionallyClosed) {
+          console.log(
+            `[Listen V2] Dropping tool_call: runtime mismatch or closed`,
+          );
+          return;
+        }
+        runDetachedListenerTask("tool_call", () =>
+          handleToolCall(runtime, socket, parsed),
+        );
         return;
       }
 

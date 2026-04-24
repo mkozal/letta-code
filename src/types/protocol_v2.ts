@@ -1493,6 +1493,23 @@ export interface ExecuteCommandCommand {
   args?: string;
 }
 
+export interface ToolCallCommand {
+  type: "tool_call";
+  tool_call_id: string;
+  tool_name: string;
+  arguments: Record<string, unknown>;
+  runtime: RuntimeScope;
+}
+
+export interface ToolReturnMessage {
+  type: "tool_return";
+  tool_call_id: string;
+  status: "success" | "error";
+  tool_return: string | any[];
+  stdout?: string[];
+  stderr?: string[];
+}
+
 // ─────────────────────────────────────────────────
 //  Git branch commands
 // ─────────────────────────────────────────────────
@@ -1603,7 +1620,8 @@ export type WsProtocolCommand =
   | ChannelRouteUpdateCommand
   | ExecuteCommandCommand
   | SearchBranchesCommand
-  | CheckoutBranchCommand;
+  | CheckoutBranchCommand
+  | ToolCallCommand;
 
 export type WsProtocolMessage =
   | DeviceStatusUpdateMessage

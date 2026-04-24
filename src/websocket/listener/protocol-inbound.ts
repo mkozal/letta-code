@@ -55,6 +55,7 @@ import type {
   TerminalKillCommand,
   TerminalResizeCommand,
   TerminalSpawnCommand,
+  ToolCallCommand,
   UnwatchFileCommand,
   UpdateModelCommand,
   UpdateToolsetCommand,
@@ -1336,6 +1337,25 @@ export function isExecuteCommandCommand(
   );
 }
 
+export function isToolCallCommand(value: unknown): value is ToolCallCommand {
+  if (!value || typeof value !== "object") return false;
+  const c = value as {
+    type?: unknown;
+    tool_call_id?: unknown;
+    tool_name?: unknown;
+    arguments?: unknown;
+    runtime?: unknown;
+  };
+  return (
+    c.type === "tool_call" &&
+    typeof c.tool_call_id === "string" &&
+    typeof c.tool_name === "string" &&
+    typeof c.arguments === "object" &&
+    c.arguments !== null &&
+    isRuntimeScope(c.runtime)
+  );
+}
+
 export function parseServerMessage(
   data: WebSocket.RawData,
 ): ParsedServerMessage | null {
@@ -1401,7 +1421,8 @@ export function parseServerMessage(
       isChannelRouteRemoveCommand(parsed) ||
       isExecuteCommandCommand(parsed) ||
       isSearchBranchesCommand(parsed) ||
-      isCheckoutBranchCommand(parsed)
+      isCheckoutBranchCommand(parsed) ||
+      isToolCallCommand(parsed)
     ) {
       return parsed as WsProtocolCommand;
     }
