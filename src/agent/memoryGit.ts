@@ -133,8 +133,21 @@ export function isMemfsRemoteUrlForAgent(
   ).test(normalized);
 }
 
-/** Git remote URL for the agent's state repo */
+/**
+ * Git remote URL for the agent's state repo.
+ *
+ * If LETTA_MEMFS_GIT_URL is set, uses it as a URL template (replaces
+ * `{agentId}` with the actual agent ID). This allows pointing directly
+ * at an external git host (e.g. Gitea) instead of proxying through the
+ * Letta server's memfs sidecar.
+ *
+ * Example: LETTA_MEMFS_GIT_URL=https://token@host/Org/{agentId}.git
+ */
 export function getGitRemoteUrl(agentId: string, baseUrl?: string): string {
+  const envUrl = process.env.LETTA_MEMFS_GIT_URL;
+  if (envUrl) {
+    return envUrl.replace("{agentId}", agentId);
+  }
   const resolvedBaseUrl = (baseUrl ?? getMemfsServerUrl())
     .trim()
     .replace(/\/+$/, "");
@@ -369,6 +382,9 @@ async function runGitWithRetry(
  * Configure a local credential helper in the repo's .git/config
  * so plain `git push` / `git pull` work without auth prefixes.
  *
+ * Skipped when LETTA_MEMFS_GIT_URL is set — external URLs (e.g. Gitea)
+ * typically embed auth in the URL or use their own credential flow.
+ *
  * On Windows, we write a batch script because the bash-style inline
  * helper (`!f() { ... }; f`) doesn't work in PowerShell/cmd.
  */
@@ -376,6 +392,10 @@ async function configureLocalCredentialHelper(
   dir: string,
   token: string,
 ): Promise<void> {
+  if (process.env.LETTA_MEMFS_GIT_URL) {
+    debugLog("memfs-git", "Skipping credential helper (LETTA_MEMFS_GIT_URL is set)");
+    return;
+  }
   const rawBaseUrl = getMemfsServerUrl();
   const normalizedBaseUrl = normalizeCredentialBaseUrl(rawBaseUrl);
 
@@ -1256,6 +1276,23 @@ export async function cloneMemoryRepo(agentId: string): Promise<void> {
       if (existsSync(tmpDir)) {
         rmSync(tmpDir, { recursive: true, force: true });
       }
+    }
+  }
+
+  // Ensure origin remote points to the right URL (handles migration
+  // from sidecar to Gitea or other external git hosts).
+  if (existsSync(join(dir, ".git"))) {
+    const url = getGitRemoteUrl(agentId);
+    try {
+      const { stdout: currentUrl } = await runGit(dir, ["remote", "get-url", "origin"]);
+      if (currentUrl.trim() !== url) {
+        await runGit(dir, ["remote", "set-url", "origin", url]);
+        debugLog("memfs-git", `Updated origin remote to ${url}`);
+      }
+    } catch {
+      // No origin remote exists — add it
+      await runGit(dir, ["remote", "add", "origin", url]);
+      debugLog("memfs-git", `Added origin remote: ${url}`);
     }
   }
 
